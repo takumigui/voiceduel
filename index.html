@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>English Voice Battle</title>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Google Fonts: Yusei Magic -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Yusei+Magic&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Yusei Magic', sans-serif;
+            background-color: #1a1a1a;
+            color: #ffffff;
+        }
+        .mic-wave {
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { transform: scale(1.1); box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        /* Custom Scrollbar for dark theme */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #2d2d2d; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #555; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #777; 
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // Default Data (Explicitly split line by line to prevent translation misalignment)
+        const DEFAULT_TEXT = `How was your time in South Africa, Eddy? | エディ、南アフリカでの時間はどうだった？
+It was fantastic! | 素晴らしかったよ！
+I visited a World Heritage site near my hometown. | 実家の近くにある世界遺産を訪れたんだ。
+What is it called? | それはなんて呼ばれているの？
+It is called the Cape Floral Region. | ケープ植物区系保護地域と呼ばれているよ。
+It is known for plant diversity. | 植物の多様性で知られているんだ。
+Plant diversity? | 植物の多様性？
+Yes, there are more than 9,000 species of plants. | ああ、9000種以上の植物があるんだ。
+Sixty-nine percent of them are only found there. | そのうちの69％はそこでしか見られないんだよ。
+Rooibos is one of them. | ルイボスもその一つさ。
+Rooibos? | ルイボス？
+Oh, rooibos tea! | ああ、ルイボスティーね！
+I love it! | 私大好き！`;
+
+        // Utility: Text Parsing
+        const parseTextData = (rawText) => {
+            const lines = rawText.split('\n');
+            const segments = [];
+
+            lines.forEach(line => {
+                if (!line.trim()) return;
+                const parts = line.split('|');
+                const en = parts[0] ? parts[0].trim() : "";
+                const ja = parts[1] ? parts[1].trim() : "";
+                
+                if (en) {
+                    segments.push({ en, ja });
+                }
+            });
+
+            return segments;
+        };
+
+        // Utility: Normalize Text for Comparison
+        const normalizeText = (text) => {
+            return text.toLowerCase().replace(/[.,?!;:'"()-]/g, "").replace(/\s+/g, " ").trim();
+        };
+
+        // Utility: Normalize word for partial matching (remove punctuation)
+        const normalizeWord = (word) => {
+            return word.toLowerCase().replace(/[.,?!;:'"()-]/g, "");
+        };
+
+        // --- Safe Icon Component ---
+        // Prevents 'removeChild' errors by isolating Lucide's DOM manipulation from React
+        const Icon = ({ name, className = "" }) => {
+            const ref = useRef(null);
+            
+            useEffect(() => {
+                if (ref.current && window.lucide) {
+                    // Create a detached DOM element to let Lucide process
+                    const temp = document.createElement('div');
+                    const i = document.createElement('i');
+                    i.setAttribute('data-lucide', name);
+                    if (className) i.setAttribute('class', className);
+                    temp.appendChild(i);
+                    
+                    // Run createIcons on the temporary element
+                    window.lucide.createIcons({
+                        root: temp,
+                        nameAttr: 'data-lucide'
+                    });
+                    
+                    // Inject the resulting SVG into our React-controlled span
+                    ref.current.innerHTML = '';
+                    if (temp.firstElementChild) {
+                        ref.current.appendChild(temp.firstElementChild);
+                    }
+                }
+            }, [name, className]);
+
+            return <span ref={ref} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}></span>;
+        };
+
+        const App = () => {
+            // App State
+            const [scene, setScene] = useState('menu'); // menu, game, result, settings
+            const [rawTextData, setRawTextData] = useState(DEFAULT_TEXT);
+            const [sentences, setSentences] = useState([]);
+            
+            // Game State
+            const [timeLeft, setTimeLeft] = useState(180); // 3 minutes
+            const [currentSentenceIdx, setCurrentSentenceIdx] = useState(0);
+            const [scores, setScores] = useState({ p1: 0, p2: 0 });
+            const [currentPlayer, setCurrentPlayer] = useState(1); // 1 or 2
+            const [phase, setPhase] = useState('select_difficulty'); // select_difficulty, speaking, result
+            const [difficulty, setDifficulty] = useState(0); // 1, 2, or 3 blanks
+            const [attempts, setAttempts] = useState(0);
+            
+            const [hiddenIndices, setHiddenIndices] = useState([]);
+            const [revealedIndices, setRevealedIndices] = useState([]); // Array of indices that have been correctly spoken
+
+            const [spokenText, setSpokenText] = useState("");
+            const [feedback, setFeedback] = useState(null); // 'correct', 'incorrect', 'steal'
+            const [isListening, setIsListening] = useState(false);
+            const [isStealMode, setIsStealMode] = useState(false);
+
+            const recognitionRef = useRef(null);
+
+            // Timer
+            useEffect(() => {
+                let timer;
+                if (scene === 'game' && timeLeft > 0) {
+                    timer = setInterval(() => {
+                        setTimeLeft(prev => {
+                            if (prev <= 1) {
+                                setScene('result');
+                                return 0;
+                            }
+                            return prev - 1;
+                        });
+                    }, 1000);
+                }
+                return () => clearInterval(timer);
+            }, [scene, timeLeft]);
+
+            // Speech Recognition Setup
+            useEffect(() => {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (SpeechRecognition) {
+                    const recognition = new SpeechRecognition();
+                    recognition.lang = 'en-US';
+                    recognition.continuous = false;
+                    recognition.interimResults = true; // Changed to true for real-time partial matching
+
+                    recognition.onstart = () => setIsListening(true);
+                    recognition.onend = () => setIsListening(false);
+                    recognition.onresult = (event) => {
+                        // Gather all interim results + final results
+                        let transcript = "";
+                        for (let i = event.resultIndex; i < event.results.length; ++i) {
+                            transcript += event.results[i][0].transcript;
+                        }
+                        setSpokenText(transcript);
+                        checkPartialAnswer(transcript, event.results[event.results.length - 1].isFinal);
+                    };
+                    recognition.onerror = (event) => {
+                        console.error("Speech error", event.error);
+                        setIsListening(false);
+                    };
+                    recognitionRef.current = recognition;
+                }
+            }, [difficulty, hiddenIndices, revealedIndices, currentSentenceIdx, currentPlayer, attempts, isStealMode]);
+
+            // Hidden Commands
+            useEffect(() => {
+                const handleKeyDown = (e) => {
+                    if (scene === 'game' && phase === 'speaking' && !feedback) {
+                        const targetSentence = sentences[currentSentenceIdx].en;
+                        
+                        if (e.key.toLowerCase() === 's') {
+                            setSpokenText(targetSentence);
+                            // Reveal all
+                            setRevealedIndices([...hiddenIndices]);
+                            handleSuccess();
+                        } else if (e.key.toLowerCase() === 'f') {
+                            const wrongText = "Something completely different";
+                            setSpokenText(wrongText);
+                            handleFailure();
+                        } else if (e.key.toLowerCase() === 'p') {
+                            // Reveal one random unrevealed index
+                            const remaining = hiddenIndices.filter(i => !revealedIndices.includes(i));
+                            if (remaining.length > 0) {
+                                const idxToReveal = remaining[0];
+                                setRevealedIndices(prev => [...prev, idxToReveal]);
+                                
+                                // Construct a fake spoken text that includes this word
+                                const words = targetSentence.split(' ');
+                                setSpokenText(`... ${words[idxToReveal]} ...`);
+                                
+                                // Check if this completes the sentence
+                                if (remaining.length === 1) {
+                                    handleSuccess();
+                                }
+                            }
+                        }
+                    }
+                };
+
+                window.addEventListener('keydown', handleKeyDown);
+                return () => window.removeEventListener('keydown', handleKeyDown);
+            }, [scene, phase, feedback, sentences, currentSentenceIdx, hiddenIndices, revealedIndices]);
+
+            const startGame = () => {
+                const parsed = parseTextData(rawTextData);
+                setSentences(parsed);
+                setCurrentSentenceIdx(0);
+                setScores({ p1: 0, p2: 0 });
+                setTimeLeft(180);
+                setCurrentPlayer(1);
+                setPhase('select_difficulty');
+                setAttempts(0);
+                setIsStealMode(false);
+                setFeedback(null);
+                setScene('game');
+            };
+
+            const selectDifficulty = (level) => {
+                const sentence = sentences[currentSentenceIdx].en;
+                const words = sentence.split(' ');
+                
+                const maxBlanks = Math.min(level, words.length);
+                
+                const indices = [];
+                while (indices.length < maxBlanks) {
+                    const r = Math.floor(Math.random() * words.length);
+                    if (!indices.includes(r)) indices.push(r);
+                }
+                
+                setDifficulty(level); 
+                setHiddenIndices(indices);
+                setRevealedIndices([]);
+                setPhase('speaking');
+                setSpokenText("");
+                setFeedback(null);
+            };
+
+            const getPointsForLevel = (level) => {
+                if (level === 1) return 2;
+                if (level === 2) return 3;
+                if (level === 3) return 5;
+                return 0;
+            };
+
+            const startListening = () => {
+                if (recognitionRef.current && !isListening) {
+                    try {
+                        recognitionRef.current.start();
+                    } catch (e) {
+                        console.error("Already started", e);
+                    }
+                } else if (!recognitionRef.current) {
+                    alert("音声認識が利用できません。キーボードコマンド(s=成功, f=失敗)を使用してください。");
+                }
+            };
+
+            const checkPartialAnswer = (transcript, isFinal) => {
+                const targetSentence = sentences[currentSentenceIdx].en;
+                const words = targetSentence.split(' ');
+                const spokenWords = normalizeText(transcript).split(' ');
+
+                // Check for revealed words
+                const newRevealed = [...revealedIndices];
+                let changed = false;
+
+                hiddenIndices.forEach(idx => {
+                    if (!newRevealed.includes(idx)) {
+                        const targetWord = normalizeWord(words[idx]);
+                        // Simple check: is the target word in the spoken words?
+                        // This allows for non-consecutive matches, which is friendlier.
+                        if (spokenWords.includes(targetWord)) {
+                            newRevealed.push(idx);
+                            changed = true;
+                        }
+                    }
+                });
+
+                if (changed) {
+                    setRevealedIndices(newRevealed);
+                }
+
+                // Check if all hidden words are revealed
+                const allRevealed = hiddenIndices.every(idx => newRevealed.includes(idx));
+                
+                // If all revealed, or if exact match (for safety)
+                if (allRevealed) {
+                    if (recognitionRef.current) recognitionRef.current.stop();
+                    handleSuccess();
+                } else if (isFinal) {
+                    // Speech ended but not all words found
+                    handleFailure();
+                }
+            };
+
+            const handleSuccess = () => {
+                if (feedback) return; // Prevent double trigger
+
+                const basePoints = getPointsForLevel(difficulty);
+                const isBonus = !isStealMode; 
+                const pointsToAdd = basePoints + (isBonus ? 2 : 0);
+
+                setScores(prev => ({
+                    ...prev,
+                    [`p${currentPlayer}`]: prev[`p${currentPlayer}`] + pointsToAdd
+                }));
+
+                setFeedback('correct');
+                
+                setTimeout(() => {
+                    nextRound(isStealMode ? currentPlayer : (currentPlayer === 1 ? 2 : 1)); 
+                }, 2000);
+            };
+
+            const handleFailure = () => {
+                if (feedback) return;
+
+                if (isStealMode) {
+                    setFeedback('incorrect_steal');
+                    setTimeout(() => {
+                        nextRound(currentPlayer); 
+                    }, 2000);
+                } else {
+                    const newAttempts = attempts + 1;
+                    setAttempts(newAttempts);
+
+                    if (newAttempts >= 2) {
+                        setFeedback('turn_change');
+                        setTimeout(() => {
+                            setIsStealMode(true);
+                            setCurrentPlayer(prev => prev === 1 ? 2 : 1);
+                            setAttempts(0);
+                            setPhase('speaking'); 
+                            setFeedback(null);
+                            setSpokenText("");
+                            setRevealedIndices([]); // Reset for stealer? Or keep revealed? Let's reset for difficulty.
+                        }, 2000);
+                    } else {
+                        setFeedback('try_again');
+                        setTimeout(() => {
+                            setFeedback(null);
+                            // Keep revealed words for next attempt? 
+                            // Usually "try again" means read the whole thing again.
+                            // But keeping them visible is a nice hint. Let's keep them.
+                            setSpokenText("");
+                        }, 1500);
+                    }
+                }
+            };
+
+            const nextRound = (nextPlayerId) => {
+                const nextIdx = currentSentenceIdx + 1;
+                if (nextIdx >= sentences.length) {
+                    setScene('result');
+                    return;
+                }
+
+                setCurrentSentenceIdx(nextIdx);
+                setPhase('select_difficulty');
+                setDifficulty(0);
+                setAttempts(0);
+                setIsStealMode(false);
+                setHiddenIndices([]);
+                setRevealedIndices([]);
+                setSpokenText("");
+                setFeedback(null);
+                
+                setCurrentPlayer((nextIdx % 2) + 1);
+            };
+
+            // Render Helpers
+            const renderMaskedSentence = () => {
+                if (!sentences[currentSentenceIdx]) return null;
+                const words = sentences[currentSentenceIdx].en.split(' ');
+                
+                return (
+                    <div className="flex flex-wrap justify-center gap-2 text-2xl md:text-4xl leading-relaxed mb-6" translate="no">
+                        {words.map((word, idx) => {
+                            const isHidden = hiddenIndices.includes(idx);
+                            const isRevealed = revealedIndices.includes(idx);
+                            const showMask = isHidden && !isRevealed && phase !== 'result' && feedback !== 'correct';
+                            
+                            // Color logic: 
+                            // Normal word: white
+                            // Revealed (correctly spoken): Green
+                            // Hidden: Mask style
+                            
+                            let className = "transition-all duration-500 ";
+                            if (showMask) {
+                                className += "bg-gray-700 text-transparent border-b-2 border-white min-w-[3ch] select-none";
+                            } else if (isHidden && isRevealed) {
+                                className += "text-green-400 font-bold scale-110"; // Highlight revealed words
+                            } else {
+                                className += "text-white";
+                            }
+
+                            return (
+                                <span key={idx} className={className}>
+                                    {word}
+                                </span>
+                            );
+                        })}
+                    </div>
+                );
+            };
+
+            // ---- SCENES ----
+
+            if (scene === 'menu') {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-gray-900 bg-opacity-95" translate="no">
+                        <div className="max-w-md w-full text-center space-y-8">
+                            <h1 className="text-5xl md:text-6xl text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600 mb-4" style={{textShadow: "2px 2px 4px rgba(0,0,0,0.5)"}}>
+                                English Voice Battle
+                            </h1>
+                            <p className="text-gray-300 text-lg mb-8">
+                                2人で対戦！穴埋め音読ゲーム
+                            </p>
+                            
+                            <div className="space-y-4">
+                                <button onClick={startGame} className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-bold py-4 px-8 rounded-xl shadow-lg transform transition hover:scale-105 flex items-center justify-center gap-3">
+                                    <Icon name="play" className="w-6 h-6" /> ゲーム開始
+                                </button>
+                                
+                                <button onClick={() => setScene('settings')} className="w-full bg-gray-700 hover:bg-gray-600 text-gray-200 font-bold py-3 px-8 rounded-xl shadow-lg transition flex items-center justify-center gap-3">
+                                    <Icon name="settings" className="w-5 h-5" /> テキスト設定
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (scene === 'settings') {
+                return (
+                    <div className="min-h-screen flex flex-col items-center p-4 md:p-8 max-w-4xl mx-auto" translate="no">
+                        <h2 className="text-3xl mb-6 flex items-center gap-2"><Icon name="settings" /> 学習テキスト設定</h2>
+                        <div className="w-full bg-gray-800 p-6 rounded-xl shadow-xl border border-gray-700">
+                            <p className="text-sm text-gray-400 mb-2">形式: 英文 | 日本語訳 (1行に1つ)</p>
+                            <textarea 
+                                className="w-full h-64 bg-gray-900 text-white p-4 rounded-lg border border-gray-600 focus:border-purple-500 outline-none font-sans"
+                                value={rawTextData}
+                                onChange={(e) => setRawTextData(e.target.value)}
+                            />
+                            <div className="flex gap-4 mt-4 justify-end">
+                                <button onClick={() => setRawTextData(DEFAULT_TEXT)} className="px-4 py-2 text-sm text-gray-400 hover:text-white underline">
+                                    デフォルトに戻す
+                                </button>
+                                <button onClick={() => setScene('menu')} className="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded-lg font-bold">
+                                    保存して戻る
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (scene === 'result') {
+                const winner = scores.p1 > scores.p2 ? 'Player 1' : (scores.p2 > scores.p1 ? 'Player 2' : 'Draw');
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-gray-900" translate="no">
+                        <div className="bg-gray-800 p-8 rounded-2xl shadow-2xl border border-gray-700 max-w-lg w-full text-center">
+                            <h2 className="text-4xl mb-8 text-yellow-400 flex justify-center items-center gap-3">
+                                <Icon name="trophy" className="w-10 h-10" /> Result
+                            </h2>
+                            
+                            <div className="flex justify-between mb-8 text-2xl">
+                                <div className="bg-blue-900/50 p-4 rounded-xl border border-blue-500/30 w-1/2 mx-2">
+                                    <div className="text-sm text-blue-300 mb-1">Player 1</div>
+                                    <div className="text-4xl font-bold">{scores.p1}</div>
+                                </div>
+                                <div className="bg-pink-900/50 p-4 rounded-xl border border-pink-500/30 w-1/2 mx-2">
+                                    <div className="text-sm text-pink-300 mb-1">Player 2</div>
+                                    <div className="text-4xl font-bold">{scores.p2}</div>
+                                </div>
+                            </div>
+
+                            <div className="text-5xl mb-10 font-bold animate-bounce text-white">
+                                {winner === 'Draw' ? "It's a Draw!" : `${winner} Wins!`}
+                            </div>
+
+                            <button onClick={() => setScene('menu')} className="bg-white text-gray-900 hover:bg-gray-200 font-bold py-3 px-8 rounded-full shadow-lg transition flex items-center gap-2 mx-auto">
+                                <Icon name="refresh-cw" /> タイトルへ
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            // GAME SCENE
+            return (
+                <div className="min-h-screen flex flex-col p-4 bg-gray-900 max-w-5xl mx-auto" translate="no">
+                    {/* Header: Score & Time */}
+                    <div className="flex justify-between items-center mb-8 bg-gray-800 p-4 rounded-xl border border-gray-700">
+                        <div className="flex gap-8">
+                            <div className={`flex flex-col ${currentPlayer === 1 ? 'text-blue-400 font-bold' : 'text-gray-500'}`}>
+                                <span className="text-xs">PLAYER 1</span>
+                                <span className="text-2xl">{scores.p1} pts</span>
+                            </div>
+                            <div className={`flex flex-col ${currentPlayer === 2 ? 'text-pink-400 font-bold' : 'text-gray-500'}`}>
+                                <span className="text-xs">PLAYER 2</span>
+                                <span className="text-2xl">{scores.p2} pts</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2 text-xl font-mono text-yellow-500 bg-gray-900 px-4 py-2 rounded-lg border border-yellow-500/30">
+                            <Icon name="clock" className="w-5 h-5" />
+                            {Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}
+                        </div>
+                    </div>
+
+                    {/* Main Game Area */}
+                    <div className="flex-1 flex flex-col items-center justify-center relative">
+                        
+                        {/* Turn Indicator */}
+                        <div className={`absolute top-0 left-1/2 transform -translate-x-1/2 px-6 py-1 rounded-b-lg text-sm font-bold tracking-widest uppercase transition-colors duration-500 ${currentPlayer === 1 ? 'bg-blue-600' : 'bg-pink-600'}`}>
+                            {isStealMode ? "STEAL CHANCE!" : `Player ${currentPlayer}'s Turn`}
+                        </div>
+
+                        {phase === 'select_difficulty' && (
+                            <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-2xl shadow-xl border border-gray-700 text-center animate-fade-in">
+                                <h3 className="text-2xl mb-6">難易度を選択してください</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <button onClick={() => selectDifficulty(1)} className="bg-green-700 hover:bg-green-600 p-6 rounded-xl transition group">
+                                        <div className="text-xl font-bold mb-2">Level 1</div>
+                                        <div className="text-sm text-green-200">1箇所 穴あき</div>
+                                        <div className="mt-4 text-2xl font-bold text-white group-hover:scale-110 transition-transform">2 Pts</div>
+                                    </button>
+                                    <button onClick={() => selectDifficulty(2)} className="bg-yellow-700 hover:bg-yellow-600 p-6 rounded-xl transition group">
+                                        <div className="text-xl font-bold mb-2">Level 2</div>
+                                        <div className="text-sm text-yellow-200">2箇所 穴あき</div>
+                                        <div className="mt-4 text-2xl font-bold text-white group-hover:scale-110 transition-transform">3 Pts</div>
+                                    </button>
+                                    <button onClick={() => selectDifficulty(3)} className="bg-red-800 hover:bg-red-700 p-6 rounded-xl transition group">
+                                        <div className="text-xl font-bold mb-2">Level 3</div>
+                                        <div className="text-sm text-red-200">3箇所 穴あき</div>
+                                        <div className="mt-4 text-2xl font-bold text-white group-hover:scale-110 transition-transform">5 Pts</div>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {phase === 'speaking' && (
+                            <div className="w-full max-w-3xl flex flex-col items-center text-center space-y-8 animate-fade-in">
+                                {/* Sentence Display */}
+                                <div className="bg-gray-800 p-8 rounded-2xl border border-gray-600 w-full shadow-2xl">
+                                    {renderMaskedSentence()}
+                                    <div className="border-t border-gray-600 pt-4 mt-6">
+                                        <p className="text-gray-400 text-lg">
+                                            {sentences[currentSentenceIdx].ja}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* Controls */}
+                                <div className="relative">
+                                    <button 
+                                        onClick={startListening} 
+                                        disabled={isListening || feedback !== null}
+                                        className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 ${
+                                            isListening 
+                                                ? 'bg-red-600 mic-wave' 
+                                                : 'bg-purple-600 hover:bg-purple-500 hover:scale-105 shadow-lg hover:shadow-purple-500/50'
+                                        } disabled:opacity-50 disabled:cursor-not-allowed`}
+                                    >
+                                        <Icon name="mic" className="w-10 h-10" />
+                                    </button>
+                                    <p className="mt-4 text-gray-400 h-6">
+                                        {isListening ? "聞いています..." : (feedback ? "" : "タップして全文を読み上げる")}
+                                    </p>
+                                </div>
+
+                                {/* Spoken Text Feedback - ENHANCED VISIBILITY */}
+                                <div className="min-h-[5rem] w-full flex flex-col items-center justify-center bg-gray-800/50 rounded-lg p-4 mt-4 border border-gray-700">
+                                    <p className="text-sm text-gray-500 mb-1">認識結果:</p>
+                                    <p className="text-2xl italic text-white font-serif">
+                                        {spokenText || "..."}
+                                    </p>
+                                </div>
+
+                                {/* Status Feedback Overlay/Message */}
+                                {feedback && (
+                                    <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+                                        <div className="bg-black bg-opacity-70 absolute inset-0"></div>
+                                        <div className="bg-gray-800 p-8 rounded-2xl border-2 shadow-2xl text-center transform scale-110 relative z-10 animate-bounce">
+                                            {feedback === 'correct' && (
+                                                <>
+                                                    <div className="text-6xl mb-2 text-green-400">Perfect!</div>
+                                                    <div className="text-2xl text-white">
+                                                        +{getPointsForLevel(difficulty) + (isStealMode ? 0 : 2)} Pts!
+                                                    </div>
+                                                </>
+                                            )}
+                                            {feedback === 'try_again' && (
+                                                <>
+                                                    <div className="text-5xl mb-2 text-yellow-400">Try Again</div>
+                                                    <div className="text-xl text-white">あと1回チャンスがあります</div>
+                                                </>
+                                            )}
+                                            {feedback === 'turn_change' && (
+                                                <>
+                                                    <div className="text-5xl mb-2 text-red-500">Failed...</div>
+                                                    <div className="text-2xl text-white">相手のターンになります！</div>
+                                                </>
+                                            )}
+                                            {feedback === 'incorrect_steal' && (
+                                                <>
+                                                    <div className="text-5xl mb-2 text-gray-400">Missed</div>
+                                                    <div className="text-xl text-white">残念...次の問題へ</div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* Remaining Attempts Indicator */}
+                    {phase === 'speaking' && !isStealMode && (
+                        <div className="absolute bottom-4 right-4 flex gap-2">
+                             {[...Array(2)].map((_, i) => (
+                                 <div key={i} className={`w-3 h-3 rounded-full ${i < (2-attempts) ? 'bg-green-500' : 'bg-gray-700'}`}></div>
+                             ))}
+                             <span className="text-xs text-gray-500 ml-1">Lives</span>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
